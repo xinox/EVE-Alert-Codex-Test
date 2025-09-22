@@ -1,5 +1,8 @@
+import colorsys
 import json
+from copy import deepcopy
 from typing import TYPE_CHECKING
+from tkinter import colorchooser
 
 import customtkinter
 from dhooks_lite import Webhook
@@ -11,6 +14,14 @@ if TYPE_CHECKING:
     from evealert.menu.main import MainMenu
 
 logger = logging.getLogger("menu")
+
+DEFAULT_COLOR_RANGES = [
+    {
+        "lower": {"h": 0, "s": 0, "v": 0},
+        "upper": {"h": 179, "s": 255, "v": 255},
+    }
+]
+
 
 DEFAULT_SETTINGS = {
     "logging": "INFO",
@@ -26,6 +37,7 @@ DEFAULT_SETTINGS = {
         "system": "Enter a System Name",
         "mute": False,
     },
+    "color_ranges": deepcopy(DEFAULT_COLOR_RANGES),
 }
 
 
@@ -35,8 +47,9 @@ class SettingMenu:
     def __init__(self, main: "MainMenu"):
         self.main = main
         self.open = False
-        self.default = DEFAULT_SETTINGS
+        self.default = deepcopy(DEFAULT_SETTINGS)
         self.changed = False
+        self.color_ranges = deepcopy(DEFAULT_COLOR_RANGES)
 
         self.setting_window = customtkinter.CTkToplevel(self.main)
         self.setting_window.title("Settings")
@@ -66,9 +79,13 @@ class SettingMenu:
             logger.debug(
                 "Setting Menu: Error reading settings file. Using default settings."
             )
-            settings = self.default
+            settings = deepcopy(self.default)
+        else:
+            settings = deepcopy(settings)
+        settings["color_ranges"] = self._normalize_color_ranges(
+            settings.get("color_ranges", [])
+        )
         self.save_settings(settings)
-        self.apply_settings(settings)
         return settings
 
     def merge_settings_with_defaults(self, settings, defaults=None):
@@ -162,6 +179,11 @@ class SettingMenu:
             self.webhook.insert(0, settings["server"]["name"])
             self.play_alarm.set(settings["server"]["mute"])
 
+            self.color_ranges = self._normalize_color_ranges(
+                settings.get("color_ranges", [])
+            )
+            self._update_color_labels()
+
         except KeyError as e:
             logger.exception(e)
             self.main.write_message(
@@ -171,7 +193,13 @@ class SettingMenu:
 
     def save_settings(self, settings=None):
         if settings is None:
-            settings = self.default
+            settings = deepcopy(self.default)
+        else:
+            settings = deepcopy(settings)
+
+        settings["color_ranges"] = self._normalize_color_ranges(
+            settings.get("color_ranges", [])
+        )
 
         config_path = get_resource_path("settings.json")
         with open(config_path, encoding="utf-8", mode="w") as config_file:
@@ -183,7 +211,7 @@ class SettingMenu:
 
     def save(self):
         try:
-            settings = DEFAULT_SETTINGS.copy()
+            settings = deepcopy(DEFAULT_SETTINGS)
             settings.update(
                 {
                     "logging": self.logging.get(),
@@ -211,6 +239,7 @@ class SettingMenu:
                         "system": self.system_name.get(),
                         "mute": self.play_alarm.get(),
                     },
+                    "color_ranges": self._normalize_color_ranges(self.color_ranges),
                 }
             )
         except ValueError as e:
@@ -345,6 +374,24 @@ class SettingMenu:
             self.menu_frame, text="Mute Alarm", variable=self.play_alarm
         )
 
+        self.color_range_label = customtkinter.CTkLabel(
+            self.menu_frame, text="Color Detection Range (HSV)", justify="left"
+        )
+        self.lower_bound_label = customtkinter.CTkLabel(
+            self.menu_frame, text="Lower Bound:", justify="left"
+        )
+        self.upper_bound_label = customtkinter.CTkLabel(
+            self.menu_frame, text="Upper Bound:", justify="left"
+        )
+        self.lower_color_button = customtkinter.CTkButton(
+            self.menu_frame, text="Pick Lower", command=self.pick_lower_color
+        )
+        self.upper_color_button = customtkinter.CTkButton(
+            self.menu_frame, text="Pick Upper", command=self.pick_upper_color
+        )
+        self.lower_color_value = customtkinter.CTkLabel(self.menu_frame, text="")
+        self.upper_color_value = customtkinter.CTkLabel(self.menu_frame, text="")
+
         # Init Visuals
 
         self.label_x_axis.grid(row=0, column=1)
@@ -399,12 +446,45 @@ class SettingMenu:
 
         self.play_alarm_checkbox.grid(row=9, column=2)
 
-        # Save Button
-        self.save_button.grid(row=11, column=0, pady=10)
-        # Close Button
-        self.close_button.grid(row=11, column=2, pady=10)
+        self.color_range_label.grid(row=10, column=0, columnspan=3, padx=20, pady=(15, 0), sticky="w")
+        self.lower_bound_label.grid(row=11, column=0, padx=20, pady=(5, 0), sticky="w")
+        self.lower_color_button.grid(row=11, column=1, padx=20, pady=(5, 0))
+        self.lower_color_value.grid(row=11, column=2, padx=20, pady=(5, 0))
+        self.upper_bound_label.grid(row=12, column=0, padx=20, pady=(5, 10), sticky="w")
+        self.upper_color_button.grid(row=12, column=1, padx=20, pady=(5, 10))
+        self.upper_color_value.grid(row=12, column=2, padx=20, pady=(5, 10))
 
+        # Save Button
+        self.save_button.grid(row=13, column=0, pady=10)
+        # Close Button
+        self.close_button.grid(row=13, column=2, pady=10)
+
+        self._update_color_labels()
         self.setting_window.protocol("WM_DELETE_WINDOW", self.clean_up)
+
+    def pick_lower_color(self):
+        color = colorchooser.askcolor(title="Select Lower HSV Bound")
+        rgb = color[0]
+        if rgb is None:
+            return
+        hsv = self._rgb_to_hsv(rgb)
+        self._ensure_color_range()
+        self.color_ranges[0]["lower"] = self._normalize_single_bound(
+            hsv, DEFAULT_COLOR_RANGES[0]["lower"]
+        )
+        self._update_color_labels()
+
+    def pick_upper_color(self):
+        color = colorchooser.askcolor(title="Select Upper HSV Bound")
+        rgb = color[0]
+        if rgb is None:
+            return
+        hsv = self._rgb_to_hsv(rgb)
+        self._ensure_color_range()
+        self.color_ranges[0]["upper"] = self._normalize_single_bound(
+            hsv, DEFAULT_COLOR_RANGES[0]["upper"]
+        )
+        self._update_color_labels()
 
     def open_menu(self):
         """Opens the settings window."""
@@ -442,3 +522,88 @@ class SettingMenu:
 
     def factionslider_event(self, slider_value):
         self.empty_label_2.configure(text=slider_value)
+
+    def _update_color_labels(self):
+        if not hasattr(self, "lower_color_value") or not hasattr(
+            self, "upper_color_value"
+        ):
+            return
+        self._ensure_color_range()
+        if not self.color_ranges:
+            return
+        color_range = self.color_ranges[0]
+        self.lower_color_value.configure(
+            text=self._format_hsv(color_range.get("lower", {}))
+        )
+        self.upper_color_value.configure(
+            text=self._format_hsv(color_range.get("upper", {}))
+        )
+
+    def _ensure_color_range(self):
+        self.color_ranges = self._normalize_color_ranges(self.color_ranges)
+
+    @staticmethod
+    def _format_hsv(values):
+        if not isinstance(values, dict):
+            return "H: 0  S: 0  V: 0"
+        return "H: {h}  S: {s}  V: {v}".format(
+            h=int(values.get("h", 0)),
+            s=int(values.get("s", 0)),
+            v=int(values.get("v", 0)),
+        )
+
+    def _normalize_color_ranges(self, color_ranges):
+        if not isinstance(color_ranges, list):
+            return deepcopy(DEFAULT_COLOR_RANGES)
+
+        normalized = []
+        for range_info in color_ranges:
+            if not isinstance(range_info, dict):
+                continue
+            lower = self._normalize_single_bound(
+                range_info.get("lower", {}), DEFAULT_COLOR_RANGES[0]["lower"]
+            )
+            upper = self._normalize_single_bound(
+                range_info.get("upper", {}), DEFAULT_COLOR_RANGES[0]["upper"]
+            )
+            normalized.append({"lower": lower, "upper": upper})
+
+        return normalized or deepcopy(DEFAULT_COLOR_RANGES)
+
+    def _normalize_single_bound(self, bound, default):
+        if isinstance(bound, dict):
+            h = bound.get("h", default["h"])
+            s = bound.get("s", default["s"])
+            v = bound.get("v", default["v"])
+        elif isinstance(bound, (list, tuple)) and len(bound) == 3:
+            h, s, v = bound
+        else:
+            h = default["h"]
+            s = default["s"]
+            v = default["v"]
+
+        return {
+            "h": self._clamp(h, 0, 179),
+            "s": self._clamp(s, 0, 255),
+            "v": self._clamp(v, 0, 255),
+        }
+
+    @staticmethod
+    def _clamp(value, minimum, maximum):
+        try:
+            value = int(round(value))
+        except (TypeError, ValueError):
+            value = minimum
+        return max(minimum, min(value, maximum))
+
+    def _rgb_to_hsv(self, rgb_color):
+        r, g, b = rgb_color
+        r /= 255
+        g /= 255
+        b /= 255
+        h, s, v = colorsys.rgb_to_hsv(r, g, b)
+        return {
+            "h": self._clamp(h * 179, 0, 179),
+            "s": self._clamp(s * 255, 0, 255),
+            "v": self._clamp(v * 255, 0, 255),
+        }

@@ -18,7 +18,7 @@ class Vision:
 
     # There are 6 methods to choose from:
     # TM_CCOEFF, TM_CCOEFF_NORMED, TM_CCORR, TM_CCORR_NORMED, TM_SQDIFF, TM_SQDIFF_NORMED
-    def __init__(self, needle_img_paths, method=cv.TM_CCOEFF_NORMED):
+    def __init__(self, needle_img_paths, method=cv.TM_CCOEFF_NORMED, color_ranges=None):
         # Load the images we're trying to match
         self.needle_imgs = [
             cv.imread(path, cv.IMREAD_UNCHANGED) for path in needle_img_paths
@@ -32,6 +32,7 @@ class Vision:
         self.debug_mode_faction = False
         self.enemy = None
         self.faction = None
+        self.color_ranges = color_ranges or []
 
     @property
     def is_vision_open(self):
@@ -197,3 +198,49 @@ class Vision:
                 cv.destroyWindow("Faction Vision")
                 self.faction = None
         return all_points
+
+    def update_color_ranges(self, color_ranges):
+        self.color_ranges = color_ranges or []
+
+    def find_color(self, haystack_img):
+        if haystack_img is None or not self.color_ranges:
+            return None
+
+        try:
+            hsv_img = cv.cvtColor(haystack_img, cv.COLOR_BGR2HSV)
+        except Exception as exc:
+            logger.error("Color detection conversion error: %s", exc)
+            return None
+
+        combined_mask = None
+        for color_range in self.color_ranges:
+            if not isinstance(color_range, dict):
+                continue
+            lower = self._convert_color_bound(color_range.get("lower"))
+            upper = self._convert_color_bound(color_range.get("upper"))
+            if lower is None or upper is None:
+                continue
+            mask = cv.inRange(hsv_img, lower, upper)
+            if combined_mask is None:
+                combined_mask = mask
+            else:
+                combined_mask = cv.bitwise_or(combined_mask, mask)
+
+        return combined_mask
+
+    @staticmethod
+    def _convert_color_bound(bound):
+        if isinstance(bound, dict):
+            values = [bound.get("h"), bound.get("s"), bound.get("v")]
+        elif isinstance(bound, (list, tuple)) and len(bound) == 3:
+            values = list(bound)
+        else:
+            return None
+
+        try:
+            array = np.array([int(round(value)) for value in values], dtype=np.int32)
+        except (TypeError, ValueError):
+            return None
+
+        array = np.clip(array, [0, 0, 0], [179, 255, 255])
+        return array.astype(np.uint8)

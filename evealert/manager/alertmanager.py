@@ -3,6 +3,7 @@ import logging
 import os
 import random
 import time
+from copy import deepcopy
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -43,8 +44,11 @@ class AlertAgent:
         self.main = main
         self.loop = asyncio.get_event_loop()
         self.wincap = WindowCapture(self.main)
-        self.alert_vision = Vision(ALERT_FILES)
-        self.alert_vision_faction = Vision(FACTION_FILES)
+        self.color_ranges = []
+        self.alert_vision = Vision(ALERT_FILES, color_ranges=deepcopy(self.color_ranges))
+        self.alert_vision_faction = Vision(
+            FACTION_FILES, color_ranges=deepcopy(self.color_ranges)
+        )
 
         # Main Settings
         self.running = False
@@ -141,6 +145,7 @@ class AlertAgent:
             self.detection_faction = int(settings["faction_scale"]["value"])
             self.cooldowntimer = int(settings["cooldown_timer"]["value"])
             self.mute = settings["server"]["mute"]
+            self.color_ranges = deepcopy(settings.get("color_ranges") or [])
             if self.main.menu.setting.is_changed:
                 vision_opened = False
                 factiom_vision_opened = False
@@ -149,13 +154,22 @@ class AlertAgent:
                 if self.alert_vision_faction.is_faction_vision_open:
                     factiom_vision_opened = True
                 # Reload the Vision
-                self.alert_vision = Vision(ALERT_FILES)
-                self.alert_vision_faction = Vision(FACTION_FILES)
+                self.alert_vision = Vision(
+                    ALERT_FILES, color_ranges=deepcopy(self.color_ranges)
+                )
+                self.alert_vision_faction = Vision(
+                    FACTION_FILES, color_ranges=deepcopy(self.color_ranges)
+                )
                 if vision_opened:
                     self.set_vision()
                 if factiom_vision_opened:
                     self.set_vision_faction()
                 self.main.write_message("Settings: Loaded.", "green")
+            else:
+                self.alert_vision.update_color_ranges(deepcopy(self.color_ranges))
+                self.alert_vision_faction.update_color_ranges(
+                    deepcopy(self.color_ranges)
+                )
 
     def set_vision(self):
         if self.is_running:
